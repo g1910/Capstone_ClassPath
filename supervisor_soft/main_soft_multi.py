@@ -82,6 +82,7 @@ switch_vec = [0, 0, 0, 0, 1, 1, 1, 1]
 sup_net = SupervisorNetwork(path_dims)
 
 models_dir = os.path.join('./checkpoint',args.exp_name, 'models')
+
 if os.path.exists(models_dir):
     load_epoch = 0
     for file in os.listdir(models_dir):
@@ -92,12 +93,14 @@ if os.path.exists(models_dir):
         print('Loading model {}'.format(load_filename))
         load_path = os.path.join(models_dir, load_filename)
         sup_net.load_state_dict(torch.load(load_path))
+else:
+    os.makedirs(models_dir)
 
 
 sup_net.cuda()
 
 bce = nn.BCELoss()
-smooth_l1 = nn.L1Loss()
+l1 = nn.L1Loss()
 mse = nn.MSELoss()
 
 optimizer = optim.Adam(sup_net.parameters(), lr=args.lr)
@@ -121,7 +124,7 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
 
     metrics['accuracy'] = accuracy
     metrics['bce_loss'] = bce_loss * args.lambda_bce
-    metrics['smooth_l1_loss_total'] = torch.from_numpy(np.float32([0.])).to(device)
+    metrics['l1_loss_total'] = torch.from_numpy(np.float32([0.])).to(device)
     metrics['orthogonality_loss_total'] = torch.from_numpy(np.float32([0.])).to(device)
     metrics['quantization_loss_total'] = torch.from_numpy(np.float32([0.])).to(device)
     metrics['total_loss'] = torch.from_numpy(np.float32([0.])).to(device)
@@ -142,7 +145,7 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
             for i in range(10):
                 s_hist['s_layer_{}_class_{}'.format(k, i)] = s_vectors[i].cpu().data.numpy()
 
-            sparsity_loss = smooth_l1(s_vectors, torch.zeros_like(s_vectors).to(device))
+            sparsity_loss = l1(s_vectors, torch.zeros_like(s_vectors).to(device))
 
             orth_loss = torch.from_numpy(np.float32([0.])).to(device)
 
@@ -156,8 +159,8 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
             orth_loss = orth_loss/45
 
             # ipdb.set_trace()
-            metrics['smooth_l1_loss_{}'.format(k)] = sparsity_loss * args.lambda_l1
-            metrics['smooth_l1_loss_total'] = metrics['smooth_l1_loss_total'] + metrics['smooth_l1_loss_{}'.format(k)]
+            metrics['l1_loss_{}'.format(k)] = sparsity_loss * args.lambda_l1
+            metrics['l1_loss_total'] = metrics['l1_loss_total'] + metrics['l1_loss_{}'.format(k)]
 
 
             metrics['orthogonality_loss_{}'.format(k)] = orth_loss * args.lambda_ortho
@@ -168,7 +171,7 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
 
     # ipdb.set_trace()
 
-    metrics['total_loss'] = metrics['total_loss'] + metrics['smooth_l1_loss_total']/num_s + \
+    metrics['total_loss'] = metrics['total_loss'] + metrics['l1_loss_total']/num_s + \
                             metrics['orthogonality_loss_total']/num_s + \
                             metrics['quantization_loss_total']/num_s
 
