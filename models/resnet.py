@@ -120,16 +120,16 @@ class ResNet(nn.Module):
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
-    # def forward(self, x):
-    #     out = F.relu(self.bn1(self.conv1(x)))
-    #     out = self.layer1(out)
-    #     out = self.layer2(out)
-    #     out = self.layer3(out)
-    #     out = self.layer4(out)
-    #     out = F.avg_pool2d(out, 4)
-    #     out = out.view(out.size(0), -1)
-    #     out = self.linear(out)
-    #     return out
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = F.avg_pool2d(out, 4)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return out
 
     def forward_check(self, x, imp_vector):
         out = F.relu(self.bn1(self.conv1(x)))
@@ -146,10 +146,8 @@ class ResNet(nn.Module):
         out = self.linear(out)
         return out
 
-
-    def forward(self, x, class_priors, switch_vector, reg=False):
+    def forward_check_multi(self, x, imp_vectors, switch_vector):
         out = F.relu(self.bn1(self.conv1(x)))
-        l1_reg = 0.
         layer_num = 0
         layer_count = [1,2,3,4]
         for lc in layer_count:
@@ -157,15 +155,13 @@ class ResNet(nn.Module):
             for layer in layer_group:
                 out = layer(out)
                 if switch_vector[layer_num]:
-                    out, l1_act = self.class_prior_modules[layer_num](out, class_priors[layer_num])
-                    if reg:
-                        l1_reg += l1_act
+                    out = out * imp_vectors[layer_num].unsqueeze(2).unsqueeze(3)
                 layer_num += 1
 
         out = F.avg_pool2d(out, 4)
         out = out.view(out.size(0), -1)
         out = self.linear(out)
-        return out, l1_reg
+        return out
 
     def forward_with_paths(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
