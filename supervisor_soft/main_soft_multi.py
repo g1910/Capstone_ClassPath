@@ -10,7 +10,7 @@ import torchvision.transforms as transforms
 import os
 import argparse
 import sys
-sys.path.append('/home/gauravm/remote/cifar_class_priors')
+sys.path.append('.')
 from models import ResNet18
 from utils import progress_bar
 
@@ -24,16 +24,16 @@ from tensorboard_logger import Logger
 from supervisor.sup_net import SupervisorNetwork
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
-parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
+parser.add_argument('--lr', default=0.001, type=float, help='learning rate')
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
 parser.add_argument('--exp_name', type=str, default='checkpoint')
 parser.add_argument('--l1', action='store_true')
 parser.add_argument('--compression', default=0.25, type=float)
 parser.add_argument('--log_after_steps', default=100, type=int)
-parser.add_argument('--lambda_bce', default=1, type=int)
-parser.add_argument('--lambda_ortho', default=1, type=int)
-parser.add_argument('--lambda_quant', default=1, type=int)
-parser.add_argument('--lambda_l1', default=1, type=int)
+parser.add_argument('--lambda_bce', default=1, type=float)
+parser.add_argument('--lambda_ortho', default=1, type=float)
+parser.add_argument('--lambda_quant', default=1, type=float)
+parser.add_argument('--lambda_l1', default=1, type=float)
 args = parser.parse_args()
 
 start_epoch = 0
@@ -64,6 +64,9 @@ classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship'
 
 logger = Logger(os.path.join('./checkpoint',args.exp_name, 'logs'))
 
+with open(os.path.join('./checkpoint', args.exp_name, 'args.pkl'), "wb") as f:
+    pickle.dump(args, f)
+
 # Model
 print('==> Building model..')
 # net = VGG('VGG19')
@@ -77,6 +80,20 @@ net.eval()
 path_dims = [64, 64, 128, 128, 256, 256, 512, 512]
 switch_vec = [0, 0, 0, 0, 1, 1, 1, 1]
 sup_net = SupervisorNetwork(path_dims)
+
+models_dir = os.path.join('./checkpoint',args.exp_name, 'models')
+if os.path.exists(models_dir):
+    load_epoch = 0
+    for file in os.listdir(models_dir):
+        if file.startswith("sup_net_epoch_"):
+            load_epoch = max(load_epoch, int(file.split('_')[3]))
+    if load_epoch > 0:
+        load_filename = 'sup_net_epoch_{}.pth'.format(load_epoch)
+        print('Loading model {}'.format(load_filename))
+        load_path = os.path.join(models_dir, load_filename)
+        sup_net.load_state_dict(torch.load(load_path))
+
+
 sup_net.cuda()
 
 bce = nn.BCELoss()
@@ -123,7 +140,7 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
         if switch_vec[k]:
             s_vectors = s_vectors_all[k]
             for i in range(10):
-                s_hist['s_layer_{}_class_{}'.format(k, i)] = s_vectors[i]
+                s_hist['s_layer_{}_class_{}'.format(k, i)] = s_vectors[i].cpu().data.numpy()
 
             sparsity_loss = smooth_l1(s_vectors, torch.zeros_like(s_vectors).to(device))
 
@@ -252,6 +269,10 @@ val(0, global_step=global_step)
 for epoch in range(start_epoch+1, start_epoch+201):
     global_step = train(epoch, global_step=global_step)
     val(epoch, global_step=global_step)
+    save_path = os.path.join('./checkpoint',args.exp_name, 'models', 'sup_net_epoch_{}.pth'.format(epoch))
+    print('Saving model at {}'.format(save_path))
+    torch.save(sup_net.state_dict(), save_path)
+
 
 
 
