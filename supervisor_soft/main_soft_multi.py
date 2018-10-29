@@ -332,6 +332,7 @@ def val(epoch, global_step=0, hard=False):
 
 global_step = load_epoch * len(trainloader)
 val(load_epoch, global_step=global_step)
+val(load_epoch, global_step=global_step, hard=True)
 for epoch in range(load_epoch+1, start_epoch+101):
     global_step = train(epoch, global_step=global_step)
     val(epoch, global_step=global_step)
