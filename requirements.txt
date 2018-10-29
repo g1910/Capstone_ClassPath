@@ -1,0 +1,7 @@
+torch
+torchvision
+tensorflow
+ipdb
+tqdm
+matplotlib
+scikit-images

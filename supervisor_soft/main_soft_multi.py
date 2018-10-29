@@ -18,8 +18,10 @@ import ipdb
 import pickle
 import numpy as np
 from tqdm import tqdm
+import skimage.io as sio
 
 from tensorboard_logger import Logger
+import matplotlib.pyplot as plt
 
 from supervisor.sup_net import SupervisorNetwork
 
@@ -83,11 +85,11 @@ sup_net = SupervisorNetwork(path_dims)
 
 models_dir = os.path.join('./checkpoint',args.exp_name, 'models')
 
+load_epoch = 0
 if os.path.exists(models_dir):
-    load_epoch = 0
     for file in os.listdir(models_dir):
         if file.startswith("sup_net_epoch_"):
-            load_epoch = max(load_epoch, int(file.split('_')[3]))
+            load_epoch = max(load_epoch, int(file.split('_')[3].split('.')[0]))
     if load_epoch > 0:
         load_filename = 'sup_net_epoch_{}.pth'.format(load_epoch)
         print('Loading model {}'.format(load_filename))
@@ -121,6 +123,7 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
 
     metrics = {}
     s_hist = {}
+    ortho_mtrx = {}
 
     metrics['accuracy'] = accuracy
     metrics['bce_loss'] = bce_loss * args.lambda_bce
@@ -153,6 +156,11 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
                 for j in range(i,10):
                     orth_loss = orth_loss + torch.dot(s_vectors[i], s_vectors[j])
 
+            ortho_mtrx['layer_{}'.format(k)] = np.zeros((10, 10))
+            for i in range(10):
+                for j in range(10):
+                    ortho_mtrx['layer_{}'.format(k)][i][j] = torch.dot(s_vectors[i], s_vectors[j]).cpu().data.numpy()
+
             quantization_target = s_vectors.detach()>0.5
             quantization_loss = mse(s_vectors, quantization_target.type(torch.cuda.FloatTensor))
 
@@ -175,11 +183,11 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
                             metrics['orthogonality_loss_total']/num_s + \
                             metrics['quantization_loss_total']/num_s
 
-    return metrics, s_hist
+    return metrics, s_hist, ortho_mtrx
 
 
 def log_vals(logger, val_dict, step, tag='train'):
-    print('Training Step: {} '.format(step), end='')
+    print('Step: {} '.format(step), end='')
     for name in val_dict.keys():
         val = val_dict[name].item()
         logger.log_scalar(tag='{}/{}'.format(tag, name), value=val, step=step)
@@ -190,6 +198,48 @@ def log_vals(logger, val_dict, step, tag='train'):
 def log_hist(logger, hist_dict, step, tag='train'):
     for name in hist_dict.keys():
         logger.log_histogram(tag='{}/{}'.format(tag, name), values=hist_dict[name], step=step, bins=10)
+
+
+def log_plots(logger, switch_vec, hist_dict, step, tag='train'):
+    labels = []
+    plots = np.zeros((10, np.sum(switch_vec)))
+    count = 0
+    for k in range(len(switch_vec)):
+        if switch_vec[k]:
+            labels.append('layer_{}'.format(k))
+            for i in range(10):
+                plots[i, count] = np.sum(1 - (hist_dict['s_layer_{}_class_{}'.format(k, i)]>0.5))/\
+                              len(hist_dict['s_layer_{}_class_{}'.format(k, i)])
+            count += 1
+    plt.figure()
+    for i in range(10):
+        plt.plot(plots[i], label='{}'.format(classes[i]))
+    plt.plot(np.mean(plots, axis=0), label='mean')
+    plt.xticks(np.arange(plots.shape[1]), labels)
+    plt.legend()
+
+    plt.savefig('plots/ratio_plot.png')
+    plt.close()
+
+    im = sio.imread('plots/ratio_plot.png')
+
+    logger.log_images(tag='{}/{}'.format(tag, 'compression_ratio_plot'),
+                      images=[im], step=step)
+
+
+def log_ortho(logger, ortho_mtrx, step, tag='train'):
+    for name in ortho_mtrx.keys():
+        mtrx = ortho_mtrx[name]
+        plt.figure()
+        plt.imshow(mtrx, cmap='jet')
+        plt.savefig('plots/ortho_{}.png'.format(name))
+        plt.close()
+
+        im = sio.imread('plots/ortho_{}.png'.format(name))
+
+        logger.log_images(tag='{}/{}'.format(tag, name),
+                          images=[im], step=step)
+
 
 
 def train(epoch, global_step=0):
@@ -214,7 +264,7 @@ def train(epoch, global_step=0):
         out = net.forward_check_multi(inputs, imp_vectors, switch_vec)
         out_softmax = F.softmax(out, dim=1)
 
-        metrics, s_hist = estimate_metrics(out_softmax, random_query, binary_target, sup_net, switch_vec)
+        metrics, s_hist, _ = estimate_metrics(out_softmax, random_query, binary_target, sup_net, switch_vec)
 
         optimizer.zero_grad()
         metrics['total_loss'].backward()
@@ -228,50 +278,64 @@ def train(epoch, global_step=0):
 
     return global_step
 
-def val(epoch, global_step=0):
+
+def val(epoch, global_step=0, hard=False):
     print('\nEpoch: %d Testing' % epoch)
     sup_net.eval()
 
     total_metrics = {}
     s_hist = {}
+    ortho_mtrx = {}
 
     for batch_idx, (inputs, targets) in enumerate(testloader):
         inputs = inputs.to(device)
         targets = targets.to(device)
 
-        one_hot = torch.zeros((inputs.size(0), 10)).fill_(1).to(device)
+        for c in range(10):
 
-        random_query = torch.from_numpy(np.random.randint(0, 10, size=(targets.size(0)))).to(device)
-        random_one_hot = torch.zeros(inputs.size(0), 10).type(
-            torch.cuda.FloatTensor)
+            one_hot = torch.zeros((inputs.size(0), 10)).fill_(1).to(device)
 
-        random_one_hot = random_one_hot.scatter_(dim=1, index=random_query.view(-1, 1), src=one_hot)
-        random_one_hot = random_one_hot.to(device)
-        binary_target = targets.eq(random_query).type(torch.cuda.LongTensor)
+            random_query = torch.zeros(inputs.size(0)).type(torch.LongTensor).fill_(c).to(device)
+            random_one_hot = torch.zeros(inputs.size(0), 10).type(
+                torch.cuda.FloatTensor)
 
-        imp_vectors = sup_net(random_one_hot)
-        out = net.forward_check_multi(inputs, imp_vectors, switch_vec)
-        out_softmax = F.softmax(out, dim=1)
+            random_one_hot = random_one_hot.scatter_(dim=1, index=random_query.view(-1, 1), src=one_hot)
+            random_one_hot = random_one_hot.to(device)
+            binary_target = targets.eq(random_query).type(torch.cuda.LongTensor)
 
-        metrics, s_hist = estimate_metrics(out_softmax, random_query, binary_target, sup_net, switch_vec)
+            imp_vectors = sup_net(random_one_hot)
+            if hard:
+                imp_vectors = [(imp_vec > 0.5).type(torch.cuda.FloatTensor) for
+                               imp_vec in imp_vectors]
+            out = net.forward_check_multi(inputs, imp_vectors, switch_vec)
+            out_softmax = F.softmax(out, dim=1)
 
-        for name in metrics.keys():
-            if name not in total_metrics:
-                total_metrics[name] = metrics[name].detach()
-            else:
-                total_metrics[name] += metrics[name].detach()
+            metrics, s_hist, ortho_mtrx = estimate_metrics(out_softmax, random_query, binary_target, sup_net, switch_vec)
+
+            for name in metrics.keys():
+                if name not in total_metrics:
+                    total_metrics[name] = metrics[name].detach()
+                else:
+                    total_metrics[name] += metrics[name].detach()
 
     for name in total_metrics.keys():
-        total_metrics[name] /= len(testloader)
+        total_metrics[name] /= (len(testloader)*10)
 
-    log_vals(logger, total_metrics, global_step, 'val')
-    log_hist(logger, s_hist, global_step, 'val')
+    tag = 'val_hard' if hard else 'val_soft'
 
-global_step = 0
-val(0, global_step=global_step)
-for epoch in range(start_epoch+1, start_epoch+201):
+    log_vals(logger, total_metrics, global_step, tag)
+    if not hard:
+        log_hist(logger, s_hist, global_step, tag)
+        log_plots(logger, switch_vec, s_hist, global_step, tag)
+        log_ortho(logger, ortho_mtrx, global_step, tag)
+
+
+global_step = load_epoch * len(trainloader)
+val(load_epoch, global_step=global_step)
+for epoch in range(load_epoch+1, start_epoch+101):
     global_step = train(epoch, global_step=global_step)
     val(epoch, global_step=global_step)
+    val(epoch, global_step=global_step, hard=True)
     save_path = os.path.join('./checkpoint',args.exp_name, 'models', 'sup_net_epoch_{}.pth'.format(epoch))
     print('Saving model at {}'.format(save_path))
     torch.save(sup_net.state_dict(), save_path)
