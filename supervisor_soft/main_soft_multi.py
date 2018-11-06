@@ -36,6 +36,7 @@ parser.add_argument('--lambda_bce', default=1, type=float)
 parser.add_argument('--lambda_ortho', default=1, type=float)
 parser.add_argument('--lambda_quant', default=1, type=float)
 parser.add_argument('--lambda_l1', default=1, type=float)
+parser.add_argument('--switch', nargs='+', type=int, default=[0, 0, 0, 0, 1, 1, 1, 1])
 args = parser.parse_args()
 
 start_epoch = 0
@@ -80,7 +81,9 @@ net.cuda()
 net.eval()
 
 path_dims = [64, 64, 128, 128, 256, 256, 512, 512]
-switch_vec = [0, 0, 0, 0, 1, 1, 1, 1]
+switch_vec = args.switch
+print('Switch vector {}'.format(switch_vec))
+
 sup_net = SupervisorNetwork(path_dims)
 
 models_dir = os.path.join('./checkpoint',args.exp_name, 'models')
@@ -153,13 +156,19 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
             orth_loss = torch.from_numpy(np.float32([0.])).to(device)
 
             for i in range(10):
-                for j in range(i,10):
-                    orth_loss = orth_loss + torch.dot(s_vectors[i], s_vectors[j])
+                for j in range(i, 10):
+                    orth_loss = orth_loss + torch.dot(
+                        s_vectors[i] / torch.norm(s_vectors[i]),
+                        s_vectors[j] / torch.norm(s_vectors[j]))
 
             ortho_mtrx['layer_{}'.format(k)] = np.zeros((10, 10))
             for i in range(10):
                 for j in range(10):
-                    ortho_mtrx['layer_{}'.format(k)][i][j] = torch.dot(s_vectors[i], s_vectors[j]).cpu().data.numpy()
+                    ortho_mtrx['layer_{}'.format(k)][i][j] = np.dot(
+                        s_vectors[i].cpu().data.numpy() / np.linalg.norm(
+                            s_vectors[i].cpu().data.numpy()),
+                        s_vectors[j].cpu().data.numpy() / np.linalg.norm(
+                            s_vectors[j].cpu().data.numpy()))
 
             quantization_target = s_vectors.detach()>0.5
             quantization_loss = mse(s_vectors, quantization_target.type(torch.cuda.FloatTensor))
