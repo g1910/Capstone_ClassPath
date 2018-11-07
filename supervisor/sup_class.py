@@ -9,7 +9,7 @@ class SupervisorQuery(nn.Module):
     def __init__(self, path_dim):
         super(SupervisorQuery, self).__init__()
         self.class_features = nn.Sequential(
-            nn.Linear(10, 128),
+            nn.Linear(100, 128),
             nn.BatchNorm1d(num_features=128),
             nn.ReLU(inplace=True),
         )

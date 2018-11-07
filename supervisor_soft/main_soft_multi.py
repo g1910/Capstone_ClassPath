@@ -57,10 +57,10 @@ transform_test = transforms.Compose([
     transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
 ])
 
-trainset = torchvision.datasets.CIFAR10(root='/home/gauravm/.torch/', train=True, download=True, transform=transform_train)
+trainset = torchvision.datasets.CIFAR100(root='/home/gauravm/.torch/', train=True, download=True, transform=transform_train)
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=128, shuffle=True, num_workers=0)
 
-testset = torchvision.datasets.CIFAR10(root='/home/gauravm/.torch/', train=False, download=True, transform=transform_test)
+testset = torchvision.datasets.CIFAR100(root='/home/gauravm/.torch/', train=False, download=True, transform=transform_test)
 testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False, num_workers=0)
 
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
@@ -75,7 +75,7 @@ print('==> Building model..')
 # net = VGG('VGG19')
 net = ResNet18()
 
-checkpoint = torch.load('res/resnet-18-py3.pth')
+checkpoint = torch.load('res/resnet-18-py3-cifar-100.pth')
 net.load_state_dict(checkpoint, strict=False)
 net.cuda()
 net.eval()
@@ -137,10 +137,10 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
     # ipdb.set_trace()
     metrics['total_loss'] = metrics['total_loss'] + metrics['bce_loss']
 
-    one_hot = torch.zeros((10, 10)).fill_(1).to(device)
-    s_one_hot = torch.zeros(10, 10).type(
+    one_hot = torch.zeros((100, 100)).fill_(1).to(device)
+    s_one_hot = torch.zeros(100, 100).type(
         torch.cuda.FloatTensor)
-    s_queries = torch.from_numpy(np.array(list(range(10)))).to(device)
+    s_queries = torch.from_numpy(np.array(list(range(100)))).to(device)
     s_one_hot = s_one_hot.scatter_(dim=1, index=s_queries.view(-1, 1), src=one_hot)
 
     s_vectors_all = sup_net(s_one_hot)
@@ -148,22 +148,22 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
     for k in range(len(switch_vec)):
         if switch_vec[k]:
             s_vectors = s_vectors_all[k]
-            for i in range(10):
+            for i in range(100):
                 s_hist['s_layer_{}_class_{}'.format(k, i)] = s_vectors[i].cpu().data.numpy()
 
             sparsity_loss = l1(s_vectors, torch.zeros_like(s_vectors).to(device))
 
             orth_loss = torch.from_numpy(np.float32([0.])).to(device)
 
-            for i in range(10):
-                for j in range(i, 10):
+            for i in range(100):
+                for j in range(i, 100):
                     orth_loss = orth_loss + torch.dot(
                         s_vectors[i] / torch.norm(s_vectors[i]),
                         s_vectors[j] / torch.norm(s_vectors[j]))
 
-            ortho_mtrx['layer_{}'.format(k)] = np.zeros((10, 10))
-            for i in range(10):
-                for j in range(10):
+            ortho_mtrx['layer_{}'.format(k)] = np.zeros((100, 100))
+            for i in range(100):
+                for j in range(100):
                     ortho_mtrx['layer_{}'.format(k)][i][j] = np.dot(
                         s_vectors[i].cpu().data.numpy() / np.linalg.norm(
                             s_vectors[i].cpu().data.numpy()),
@@ -185,6 +185,8 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
 
             metrics['quantization_loss_{}'.format(k)] = quantization_loss * args.lambda_quant
             metrics['quantization_loss_total'] = metrics['quantization_loss_total'] + metrics['quantization_loss_{}'.format(k)]
+
+            print(k)
 
     # ipdb.set_trace()
 
@@ -211,18 +213,18 @@ def log_hist(logger, hist_dict, step, tag='train'):
 
 def log_plots(logger, switch_vec, hist_dict, step, tag='train'):
     labels = []
-    plots = np.zeros((10, np.sum(switch_vec)))
+    plots = np.zeros((100, np.sum(switch_vec)))
     count = 0
     for k in range(len(switch_vec)):
         if switch_vec[k]:
             labels.append('layer_{}'.format(k))
-            for i in range(10):
+            for i in range(100):
                 plots[i, count] = np.sum(1 - (hist_dict['s_layer_{}_class_{}'.format(k, i)]>0.5))/\
                               len(hist_dict['s_layer_{}_class_{}'.format(k, i)])
             count += 1
     plt.figure()
-    for i in range(10):
-        plt.plot(plots[i], label='{}'.format(classes[i]))
+    for i in range(100):
+        plt.plot(plots[i], label='{}'.format(i))
     plt.plot(np.mean(plots, axis=0), label='mean')
     plt.xticks(np.arange(plots.shape[1]), labels)
     plt.legend()
@@ -255,14 +257,14 @@ def train(epoch, global_step=0):
     print('\nEpoch: %d Training' % epoch)
     sup_net.train()
 
-    for batch_idx, (inputs, targets) in enumerate(trainloader):
+    for batch_idx, (inputs, targets) in tqdm(enumerate(trainloader), total=len(trainloader)):
         inputs = inputs.to(device)
         targets = targets.to(device)
 
-        one_hot = torch.zeros((inputs.size(0), 10)).fill_(1).to(device)
+        one_hot = torch.zeros((inputs.size(0), 100)).fill_(1).to(device)
 
-        random_query = torch.from_numpy(np.random.randint(0, 10, size=(targets.size(0)))).to(device)
-        random_one_hot = torch.zeros(inputs.size(0), 10).type(
+        random_query = torch.from_numpy(np.random.randint(0, 100, size=(targets.size(0)))).to(device)
+        random_one_hot = torch.zeros(inputs.size(0), 100).type(
             torch.cuda.FloatTensor)
 
         random_one_hot = random_one_hot.scatter_(dim=1, index=random_query.view(-1, 1), src=one_hot)
@@ -296,16 +298,16 @@ def val(epoch, global_step=0, hard=False):
     s_hist = {}
     ortho_mtrx = {}
 
-    for batch_idx, (inputs, targets) in enumerate(testloader):
+    for batch_idx, (inputs, targets) in tqdm(enumerate(testloader), total=len(testloader)):
         inputs = inputs.to(device)
         targets = targets.to(device)
 
-        for c in range(10):
+        for c in range(100):
 
-            one_hot = torch.zeros((inputs.size(0), 10)).fill_(1).to(device)
+            one_hot = torch.zeros((inputs.size(0), 100)).fill_(1).to(device)
 
             random_query = torch.zeros(inputs.size(0)).type(torch.LongTensor).fill_(c).to(device)
-            random_one_hot = torch.zeros(inputs.size(0), 10).type(
+            random_one_hot = torch.zeros(inputs.size(0), 100).type(
                 torch.cuda.FloatTensor)
 
             random_one_hot = random_one_hot.scatter_(dim=1, index=random_query.view(-1, 1), src=one_hot)
@@ -328,7 +330,7 @@ def val(epoch, global_step=0, hard=False):
                     total_metrics[name] += metrics[name].detach()
 
     for name in total_metrics.keys():
-        total_metrics[name] /= (len(testloader)*10)
+        total_metrics[name] /= (len(testloader)*100)
 
     tag = 'val_hard' if hard else 'val_soft'
 
