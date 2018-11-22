@@ -111,7 +111,7 @@ mse = nn.MSELoss()
 optimizer = optim.Adam(sup_net.parameters(), lr=args.lr)
 
 
-def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
+def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec, is_train=True):
     query_pred = torch.gather(pred, 1, random_query.view(-1, 1)).squeeze(1)
 
     num_s = torch.tensor(np.sum(switch_vec).item(), dtype=torch.float32).to(device)
@@ -145,48 +145,58 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
 
     s_vectors_all = sup_net(s_one_hot)
 
-    for k in range(len(switch_vec)):
-        if switch_vec[k]:
-            s_vectors = s_vectors_all[k]
-            for i in range(100):
-                s_hist['s_layer_{}_class_{}'.format(k, i)] = s_vectors[i].cpu().data.numpy()
+    if is_train:
+        for k in range(len(switch_vec)):
+            if switch_vec[k]:
+                s_vectors = s_vectors_all[k]
+                for i in range(100):
+                    s_hist['s_layer_{}_class_{}'.format(k, i)] = s_vectors[i].cpu().data.numpy()
 
-            sparsity_loss = l1(s_vectors, torch.zeros_like(s_vectors).to(device))
+                sparsity_loss = l1(s_vectors, torch.zeros_like(s_vectors).to(device))
 
-            orth_loss = torch.from_numpy(np.float32([0.])).to(device)
+                # ipdb.set_trace()
 
-            for i in range(100):
-                for j in range(i, 100):
-                    orth_loss = orth_loss + torch.dot(
-                        s_vectors[i] / torch.norm(s_vectors[i]),
-                        s_vectors[j] / torch.norm(s_vectors[j]))
+                norm_s_vectors = s_vectors/torch.norm(s_vectors, dim=1,
+                                                      keepdim=True)
 
-            ortho_mtrx['layer_{}'.format(k)] = np.zeros((100, 100))
-            for i in range(100):
-                for j in range(100):
-                    ortho_mtrx['layer_{}'.format(k)][i][j] = np.dot(
-                        s_vectors[i].cpu().data.numpy() / np.linalg.norm(
-                            s_vectors[i].cpu().data.numpy()),
-                        s_vectors[j].cpu().data.numpy() / np.linalg.norm(
-                            s_vectors[j].cpu().data.numpy()))
+                mtrx = torch.matmul(norm_s_vectors,norm_s_vectors.permute(1,0))
+                orth_loss = torch.sum(mtrx - torch.diag(mtrx))
+                orth_loss = orth_loss / 10000
 
-            quantization_target = s_vectors.detach()>0.5
-            quantization_loss = mse(s_vectors, quantization_target.type(torch.cuda.FloatTensor))
+                ortho_mtrx['layer_{}'.format(k)] = mtrx.cpu().data.numpy()
 
-            orth_loss = orth_loss/45
+                # for i in range(100):
+                #     for j in range(i, 100):
+                #         orth_loss = orth_loss + torch.dot(
+                #             s_vectors[i] / torch.norm(s_vectors[i]),
+                #             s_vectors[j] / torch.norm(s_vectors[j]))
 
-            # ipdb.set_trace()
-            metrics['l1_loss_{}'.format(k)] = sparsity_loss * args.lambda_l1
-            metrics['l1_loss_total'] = metrics['l1_loss_total'] + metrics['l1_loss_{}'.format(k)]
+                # ortho_mtrx['layer_{}'.format(k)] = np.zeros((100, 100))
+                # for i in range(100):
+                #     for j in range(100):
+                #         ortho_mtrx['layer_{}'.format(k)][i][j] = np.dot(
+                #             s_vectors[i].cpu().data.numpy() / np.linalg.norm(
+                #                 s_vectors[i].cpu().data.numpy()),
+                #             s_vectors[j].cpu().data.numpy() / np.linalg.norm(
+                #                 s_vectors[j].cpu().data.numpy()))
+
+                quantization_target = s_vectors.detach()>0.5
+                quantization_loss = mse(s_vectors, quantization_target.type(torch.cuda.FloatTensor))
+
+                # orth_loss = orth_loss/45
+
+                # ipdb.set_trace()
+                metrics['l1_loss_{}'.format(k)] = sparsity_loss * args.lambda_l1
+                metrics['l1_loss_total'] = metrics['l1_loss_total'] + metrics['l1_loss_{}'.format(k)]
 
 
-            metrics['orthogonality_loss_{}'.format(k)] = orth_loss * args.lambda_ortho
-            metrics['orthogonality_loss_total'] = metrics['orthogonality_loss_total']  + metrics['orthogonality_loss_{}'.format(k)]
+                metrics['orthogonality_loss_{}'.format(k)] = orth_loss * args.lambda_ortho
+                metrics['orthogonality_loss_total'] = metrics['orthogonality_loss_total']  + metrics['orthogonality_loss_{}'.format(k)]
 
-            metrics['quantization_loss_{}'.format(k)] = quantization_loss * args.lambda_quant
-            metrics['quantization_loss_total'] = metrics['quantization_loss_total'] + metrics['quantization_loss_{}'.format(k)]
+                metrics['quantization_loss_{}'.format(k)] = quantization_loss * args.lambda_quant
+                metrics['quantization_loss_total'] = metrics['quantization_loss_total'] + metrics['quantization_loss_{}'.format(k)]
 
-            print(k)
+                # print(k)
 
     # ipdb.set_trace()
 
@@ -298,9 +308,14 @@ def val(epoch, global_step=0, hard=False):
     s_hist = {}
     ortho_mtrx = {}
 
+    total_ = 0.
+    correct_ = 0.
+
     for batch_idx, (inputs, targets) in tqdm(enumerate(testloader), total=len(testloader)):
         inputs = inputs.to(device)
         targets = targets.to(device)
+
+        class_softmax = np.zeros((inputs.size(0), 100))
 
         for c in range(100):
 
@@ -320,17 +335,30 @@ def val(epoch, global_step=0, hard=False):
                                imp_vec in imp_vectors]
             out = net.forward_check_multi(inputs, imp_vectors, switch_vec)
             out_softmax = F.softmax(out, dim=1)
+            class_softmax[:, c] = out_softmax.cpu().data.numpy()[:,c]
 
-            metrics, s_hist, ortho_mtrx = estimate_metrics(out_softmax, random_query, binary_target, sup_net, switch_vec)
+            metrics, s_hist, ortho_mtrx = estimate_metrics(out_softmax, random_query, binary_target, sup_net, switch_vec, False)
 
             for name in metrics.keys():
                 if name not in total_metrics:
                     total_metrics[name] = metrics[name].detach()
                 else:
                     total_metrics[name] += metrics[name].detach()
+        # ipdb.set_trace()
+        pred_class = np.argmax(class_softmax, axis=1)
+        total_ += targets.size(0)
+        correct_ += np.sum(pred_class == targets.cpu().data.numpy())
+
+
+    acc_ = correct_/total_
+    total_metrics['multi_class_accuracy'] = acc_
 
     for name in total_metrics.keys():
         total_metrics[name] /= (len(testloader)*100)
+
+    metrics, s_hist, ortho_mtrx = estimate_metrics(out_softmax, random_query,
+                                                   binary_target, sup_net,
+                                                   switch_vec, True)
 
     tag = 'val_hard' if hard else 'val_soft'
 
@@ -346,8 +374,9 @@ val(load_epoch, global_step=global_step)
 val(load_epoch, global_step=global_step, hard=True)
 for epoch in range(load_epoch+1, start_epoch+101):
     global_step = train(epoch, global_step=global_step)
-    val(epoch, global_step=global_step)
-    val(epoch, global_step=global_step, hard=True)
+    if epoch % 5 == 0:
+        val(epoch, global_step=global_step)
+        val(epoch, global_step=global_step, hard=True)
     save_path = os.path.join('./checkpoint',args.exp_name, 'models', 'sup_net_epoch_{}.pth'.format(epoch))
     print('Saving model at {}'.format(save_path))
     torch.save(sup_net.state_dict(), save_path)
