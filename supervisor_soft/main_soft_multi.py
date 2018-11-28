@@ -151,7 +151,7 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
     fp_bce = bce_loss_elem[fp].sum() / 9.
     fn_bce = bce_loss_elem[fn].sum() / 9.
 
-    bce_loss = (tn_bce + tp_bce + fp_bce + fn_bce) / 4.
+    bce_loss = tn_bce + tp_bce + fp_bce + fn_bce
 
     metrics = {}
     s_hist = {}
@@ -308,7 +308,7 @@ def train(epoch, global_step=0):
     print('\nEpoch: %d Training' % epoch)
     sup_net.train()
 
-    for batch_idx, (inputs, targets) in enumerate(trainloader):
+    for batch_idx, (inputs, targets) in tqdm(enumerate(trainloader), total=len(trainloader)):
         inputs = inputs.to(device)
         targets = targets.to(device)
 
@@ -354,7 +354,7 @@ def val(epoch, global_step=0, hard=False):
     s_hist = {}
     ortho_mtrx = {}
 
-    for batch_idx, (inputs, targets) in enumerate(testloader):
+    for batch_idx, (inputs, targets) in tqdm(enumerate(testloader), total=len(testloader)):
         inputs = inputs.to(device)
         targets = targets.to(device)
 
@@ -398,7 +398,7 @@ def val(epoch, global_step=0, hard=False):
                         total_metrics['fn'] / 9.)
 
     for name in total_metrics.keys():
-        if name not in ['tp', 'tn', 'fn', 'fp']:
+        if name not in ['tp', 'tn', 'fn', 'fp', 'accuracy']:
             total_metrics[name] /= (len(testloader) * 10)
 
     tag = 'val_hard' if hard else 'val_soft'
