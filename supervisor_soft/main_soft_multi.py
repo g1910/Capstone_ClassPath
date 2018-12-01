@@ -213,7 +213,7 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
             quantization_loss = mse(s_vectors, quantization_target.type(
                 torch.cuda.FloatTensor))
 
-            orth_loss = orth_loss / 45
+            orth_loss = orth_loss / 100
 
             # ipdb.set_trace()
             metrics['l1_loss_{}'.format(k)] = sparsity_loss * args.lambda_l1
