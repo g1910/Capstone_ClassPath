@@ -104,7 +104,7 @@ else:
 
 sup_net.cuda()
 
-bce = nn.BCELoss()
+bce = nn.BCELoss(reduce=False)
 l1 = nn.L1Loss()
 mse = nn.MSELoss()
 
@@ -119,14 +119,37 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec, is_
 
     _, class_pred = torch.max(pred, dim=1)
     binary_pred = class_pred.eq(random_query).type(torch.cuda.LongTensor)
-    correct = binary_target.eq(binary_pred).sum()
-    accuracy = correct.type(torch.cuda.FloatTensor)/binary_target.size(0)
+    fn = ((binary_pred == 0) + (binary_target == 1)).eq(2)
+    fp = ((binary_pred == 1) + (binary_target == 0)).eq(2)
+    tp = ((binary_pred == 1) + (binary_target == 1)).eq(2)
+    tn = ((binary_pred == 0) + (binary_target == 0)).eq(2)
 
-    bce_loss = bce(query_pred, binary_target.type(torch.cuda.FloatTensor))
+    tn_total = tn.sum().type(torch.cuda.FloatTensor) / 81.
+    tp_total = tp.sum().type(torch.cuda.FloatTensor)
+    fp_total = fp.sum().type(torch.cuda.FloatTensor) / 9.
+    fn_total = fn.sum().type(torch.cuda.FloatTensor) / 9.
+
+    accuracy = (tp_total + tn_total) / (
+            tn_total + tp_total + fp_total + fn_total)
+    # correct = binary_target.eq(binary_pred).sum()
+    # accuracy = correct.type(torch.cuda.FloatTensor)/binary_target.size(0)
+
+    bce_loss_elem = bce(query_pred, binary_target.type(torch.cuda.FloatTensor))
+    tn_bce = bce_loss_elem[tn].sum() / 81.
+    tp_bce = bce_loss_elem[tp].sum()
+    fp_bce = bce_loss_elem[fp].sum() / 9.
+    fn_bce = bce_loss_elem[fn].sum() / 9.
+
+    bce_loss = tn_bce + tp_bce + fp_bce + fn_bce
 
     metrics = {}
     s_hist = {}
     ortho_mtrx = {}
+
+    metrics['tn'] = tn.sum().type(torch.cuda.FloatTensor)
+    metrics['tp'] = tp.sum().type(torch.cuda.FloatTensor)
+    metrics['fn'] = fn.sum().type(torch.cuda.FloatTensor)
+    metrics['fp'] = fp.sum().type(torch.cuda.FloatTensor)
 
     metrics['accuracy'] = accuracy
     metrics['bce_loss'] = bce_loss * args.lambda_bce
@@ -262,7 +285,6 @@ def log_ortho(logger, ortho_mtrx, step, tag='train'):
                           images=[im], step=step)
 
 
-
 def train(epoch, global_step=0):
     print('\nEpoch: %d Training' % epoch)
     sup_net.train()
@@ -353,8 +375,14 @@ def val(epoch, global_step=0, hard=False):
     acc_ = correct_/total_
     total_metrics['multi_class_accuracy'] = acc_
 
+    total_metrics['accuracy'] = (total_metrics['tp'] + total_metrics['tn'] / 81.) / (total_metrics['tp'] +
+                        total_metrics['tn'] / 81. +
+                        total_metrics['fp'] / 9. +
+                        total_metrics['fn'] / 9.)
+
     for name in total_metrics.keys():
-        total_metrics[name] /= (len(testloader)*100)
+        if name not in ['tp', 'tn', 'fn', 'fp', 'accuracy', 'multi_class_accuracy']:
+            total_metrics[name] /= (len(testloader)*100)
 
     metrics, s_hist, ortho_mtrx = estimate_metrics(out_softmax, random_query,
                                                    binary_target, sup_net,
@@ -374,7 +402,7 @@ val(load_epoch, global_step=global_step)
 val(load_epoch, global_step=global_step, hard=True)
 for epoch in range(load_epoch+1, start_epoch+101):
     global_step = train(epoch, global_step=global_step)
-    if epoch % 5 == 0:
+    if epoch % 3 == 0:
         val(epoch, global_step=global_step)
         val(epoch, global_step=global_step, hard=True)
     save_path = os.path.join('./checkpoint',args.exp_name, 'models', 'sup_net_epoch_{}.pth'.format(epoch))
