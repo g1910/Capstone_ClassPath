@@ -11,6 +11,8 @@ import os
 import argparse
 import sys
 
+from essentials import make_dir
+
 sys.path.append('.')
 from models import ResNet18
 from utils import progress_bar
@@ -262,6 +264,9 @@ def log_hist(logger, hist_dict, step, tag='train'):
 
 
 def log_plots(logger, switch_vec, hist_dict, step, tag='train'):
+    plots_dir = os.path.join('./checkpoint',args.exp_name, 'plots')
+    make_dir(plots_dir)
+
     labels = []
     plots = np.zeros((10, np.sum(switch_vec)))
     count = 0
@@ -281,24 +286,27 @@ def log_plots(logger, switch_vec, hist_dict, step, tag='train'):
     plt.xticks(np.arange(plots.shape[1]), labels)
     plt.legend()
 
-    plt.savefig('plots/ratio_plot.png')
+    plt.savefig(os.path.join(plots_dir, 'ratio_plot.png'))
     plt.close()
 
-    im = sio.imread('plots/ratio_plot.png')
+    im = sio.imread(os.path.join(plots_dir, 'ratio_plot.png'))
 
     logger.log_images(tag='{}/{}'.format(tag, 'compression_ratio_plot'),
                       images=[im], step=step)
 
 
 def log_ortho(logger, ortho_mtrx, step, tag='train'):
+    plots_dir = os.path.join('./checkpoint',args.exp_name, 'plots')
+    make_dir(plots_dir)
+
     for name in ortho_mtrx.keys():
         mtrx = ortho_mtrx[name]
         plt.figure()
         plt.imshow(mtrx, cmap='jet')
-        plt.savefig('plots/ortho_{}.png'.format(name))
+        plt.savefig(os.path.join(plots_dir, 'ortho_{}.png'.format(name)))
         plt.close()
 
-        im = sio.imread('plots/ortho_{}.png'.format(name))
+        im = sio.imread(os.path.join(plots_dir, 'ortho_{}.png'.format(name)))
 
         logger.log_images(tag='{}/{}'.format(tag, name),
                           images=[im], step=step)
