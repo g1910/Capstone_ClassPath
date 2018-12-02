@@ -123,7 +123,7 @@ mse = nn.MSELoss()
 optimizer = optim.Adam(sup_net.parameters(), lr=args.lr)
 
 
-def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
+def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec, is_train=True):
     query_pred = torch.gather(pred, 1, random_query.view(-1, 1)).squeeze(1)
 
     num_s = torch.tensor(np.sum(switch_vec).item(), dtype=torch.float32).to(
@@ -184,66 +184,57 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec):
 
     s_vectors_all = sup_net(s_one_hot)
 
-    for k in range(len(switch_vec)):
-        if switch_vec[k]:
-            s_vectors = s_vectors_all[k]
-            for i in range(10):
-                s_hist['s_layer_{}_class_{}'.format(k, i)] = s_vectors[
-                    i].cpu().data.numpy()
+    if is_train:
+        for k in range(len(switch_vec)):
+            if switch_vec[k]:
+                s_vectors = s_vectors_all[k]
+                for i in range(10):
+                    s_hist['s_layer_{}_class_{}'.format(k, i)] = s_vectors[
+                        i].cpu().data.numpy()
 
-            sparsity_loss = l1(s_vectors,
-                               torch.zeros_like(s_vectors).to(device))
+                sparsity_loss = l1(s_vectors,
+                                   torch.zeros_like(s_vectors).to(device))
 
-            orth_loss = torch.from_numpy(np.float32([0.])).to(device)
+                orth_loss = torch.from_numpy(np.float32([0.])).to(device)
 
-            for i in range(10):
-                for j in range(i, 10):
-                    orth_loss = orth_loss + torch.dot(
-                        s_vectors[i] / torch.norm(s_vectors[i]),
-                        s_vectors[j] / torch.norm(s_vectors[j]))
+                for i in range(10):
+                    for j in range(i, 10):
+                        orth_loss = orth_loss + torch.dot(
+                            s_vectors[i] / torch.norm(s_vectors[i]),
+                            s_vectors[j] / torch.norm(s_vectors[j]))
 
-            ortho_mtrx['layer_{}'.format(k)] = np.zeros((10, 10))
-            for i in range(10):
-                for j in range(10):
-                    ortho_mtrx['layer_{}'.format(k)][i][j] = np.dot(
-                        s_vectors[i].cpu().data.numpy() / np.linalg.norm(
-                            s_vectors[i].cpu().data.numpy()),
-                        s_vectors[j].cpu().data.numpy() / np.linalg.norm(
-                            s_vectors[j].cpu().data.numpy()))
+                ortho_mtrx['layer_{}'.format(k)] = np.zeros((10, 10))
+                for i in range(10):
+                    for j in range(10):
+                        ortho_mtrx['layer_{}'.format(k)][i][j] = np.dot(
+                            s_vectors[i].cpu().data.numpy() / np.linalg.norm(
+                                s_vectors[i].cpu().data.numpy()),
+                            s_vectors[j].cpu().data.numpy() / np.linalg.norm(
+                                s_vectors[j].cpu().data.numpy()))
 
-            quantization_target = s_vectors.detach() > 0.5
-            quantization_loss = mse(s_vectors, quantization_target.type(
-                torch.cuda.FloatTensor))
+                quantization_target = s_vectors.detach() > 0.5
+                quantization_loss = mse(s_vectors, quantization_target.type(
+                    torch.cuda.FloatTensor))
 
-            orth_loss = orth_loss / 100
+                orth_loss = orth_loss / 100
 
-            # ipdb.set_trace()
-            metrics['l1_loss_{}'.format(k)] = sparsity_loss * args.lambda_l1
-            metrics['l1_loss_total'] = metrics['l1_loss_total'] + metrics[
-                'l1_loss_{}'.format(k)]
+                # ipdb.set_trace()
+                metrics['l1_loss_{}'.format(k)] = sparsity_loss * args.lambda_l1
+                metrics['l1_loss_total'] = metrics['l1_loss_total'] + metrics[
+                    'l1_loss_{}'.format(k)]
 
-            metrics['orthogonality_loss_{}'.format(
-                k)] = orth_loss * args.lambda_ortho
-            metrics['orthogonality_loss_total'] = metrics[
-                                                      'orthogonality_loss_total'] + \
-                                                  metrics[
-                                                      'orthogonality_loss_{}'.format(
-                                                          k)]
+                metrics['orthogonality_loss_{}'.format(
+                    k)] = orth_loss * args.lambda_ortho
+                metrics['orthogonality_loss_total'] = metrics['orthogonality_loss_total']  + metrics['orthogonality_loss_{}'.format(k)]
 
-            metrics['quantization_loss_{}'.format(
-                k)] = quantization_loss * args.lambda_quant
-            metrics['quantization_loss_total'] = metrics[
-                                                     'quantization_loss_total'] + \
-                                                 metrics[
-                                                     'quantization_loss_{}'.format(
-                                                         k)]
+                metrics['quantization_loss_{}'.format(k)] = quantization_loss * args.lambda_quant
+                metrics['quantization_loss_total'] = metrics['quantization_loss_total'] + metrics['quantization_loss_{}'.format(k)]
 
     # ipdb.set_trace()
 
-    metrics['total_loss'] = metrics['total_loss'] + metrics[
-        'l1_loss_total'] / num_s + \
-                            metrics['orthogonality_loss_total'] / num_s + \
-                            metrics['quantization_loss_total'] / num_s
+    metrics['total_loss'] = metrics['total_loss'] + metrics['l1_loss_total']/num_s + \
+                            metrics['orthogonality_loss_total']/num_s + \
+                            metrics['quantization_loss_total']/num_s
 
     return metrics, s_hist, ortho_mtrx
 
@@ -376,8 +367,7 @@ def val(epoch, global_step=0, hard=False):
                 torch.cuda.FloatTensor)
 
             random_one_hot = random_one_hot.scatter_(dim=1,
-                                                     index=random_query.view(-1,
-                                                                             1),
+                                                     index=random_query.view(-1, 1),
                                                      src=one_hot)
             random_one_hot = random_one_hot.to(device)
             binary_target = targets.eq(random_query).type(torch.cuda.LongTensor)
@@ -392,7 +382,7 @@ def val(epoch, global_step=0, hard=False):
             metrics, s_hist, ortho_mtrx = estimate_metrics(out_softmax,
                                                            random_query,
                                                            binary_target,
-                                                           sup_net, switch_vec)
+                                                           sup_net, switch_vec, False)
 
             for name in metrics.keys():
                 if name not in total_metrics:
@@ -408,6 +398,10 @@ def val(epoch, global_step=0, hard=False):
     for name in total_metrics.keys():
         if name not in ['tp', 'tn', 'fn', 'fp', 'accuracy']:
             total_metrics[name] /= (len(testloader) * 10)
+
+    metrics, s_hist, ortho_mtrx = estimate_metrics(out_softmax, random_query,
+                                                   binary_target, sup_net,
+                                                   switch_vec, True)
 
     tag = 'val_hard' if hard else 'val_soft'
 
