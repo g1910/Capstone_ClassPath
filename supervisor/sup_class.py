@@ -6,10 +6,10 @@ import ipdb
 
 # LeNet Type Supervisor Model
 class SupervisorQuery(nn.Module):
-    def __init__(self, path_dim):
+    def __init__(self, path_dim, input_dim=100):
         super(SupervisorQuery, self).__init__()
         self.class_features = nn.Sequential(
-            nn.Linear(100, 128),
+            nn.Linear(input_dim, 128),
             nn.BatchNorm1d(num_features=128),
             nn.ReLU(inplace=True),
         )
