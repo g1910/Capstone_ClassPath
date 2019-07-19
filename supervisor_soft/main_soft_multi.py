@@ -390,10 +390,10 @@ def val(epoch, global_step=0, hard=False):
     acc_ = correct_/total_
     total_metrics['multi_class_accuracy'] = acc_
 
-    total_metrics['accuracy'] = (total_metrics['tp'] + total_metrics['tn'] / 81.) / (total_metrics['tp'] +
-                        total_metrics['tn'] / 81. +
-                        total_metrics['fp'] / 9. +
-                        total_metrics['fn'] / 9.)
+    total_metrics['accuracy'] = (total_metrics['tp'] + total_metrics['tn'] / (99. * 99.)) / (total_metrics['tp'] +
+                        total_metrics['tn'] / (99. * 99.) +
+                        total_metrics['fp'] / 99. +
+                        total_metrics['fn'] / 99.)
 
     for name in total_metrics.keys():
         if name not in ['tp', 'tn', 'fn', 'fp', 'accuracy', 'multi_class_accuracy']:
