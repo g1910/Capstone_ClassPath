@@ -353,9 +353,14 @@ def val(epoch, global_step=0, hard=False):
     s_hist = {}
     ortho_mtrx = {}
 
+    total_ = 0.
+    correct_ = 0.
+
     for batch_idx, (inputs, targets) in tqdm(enumerate(testloader), total=len(testloader)):
         inputs = inputs.to(device)
         targets = targets.to(device)
+
+        class_softmax = np.zeros((inputs.size(0), 10))
 
         for c in range(10):
 
@@ -378,6 +383,7 @@ def val(epoch, global_step=0, hard=False):
                                imp_vec in imp_vectors]
             out = net.forward_check_multi(inputs, imp_vectors, switch_vec)
             out_softmax = F.softmax(out, dim=1)
+            class_softmax[:, c] = out_softmax.cpu().data.numpy()[:,c]
 
             metrics, s_hist, ortho_mtrx = estimate_metrics(out_softmax,
                                                            random_query,
@@ -389,6 +395,14 @@ def val(epoch, global_step=0, hard=False):
                     total_metrics[name] = metrics[name].detach()
                 else:
                     total_metrics[name] += metrics[name].detach()
+        # ipdb.set_trace()
+        pred_class = np.argmax(class_softmax, axis=1)
+        total_ += targets.size(0)
+        correct_ += np.sum(pred_class == targets.cpu().data.numpy())
+
+
+    acc_ = correct_/total_
+    total_metrics['multi_class_accuracy'] = acc_
 
     total_metrics['accuracy'] = (total_metrics['tp'] + total_metrics['tn'] / 81.) / (total_metrics['tp'] +
                         total_metrics['tn'] / 81. +
@@ -396,7 +410,7 @@ def val(epoch, global_step=0, hard=False):
                         total_metrics['fn'] / 9.)
 
     for name in total_metrics.keys():
-        if name not in ['tp', 'tn', 'fn', 'fp', 'accuracy']:
+        if name not in ['tp', 'tn', 'fn', 'fp', 'accuracy', 'multi_class_accuracy']:
             total_metrics[name] /= (len(testloader) * 10)
 
     metrics, s_hist, ortho_mtrx = estimate_metrics(out_softmax, random_query,
