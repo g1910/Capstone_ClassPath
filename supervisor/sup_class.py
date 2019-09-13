@@ -7,6 +7,9 @@ import ipdb
 # LeNet Type Supervisor Model
 class SupervisorQuery(nn.Module):
     def __init__(self, path_dim):
+        '''
+        :param path_dim: the number of channels in the current layer being considered for compression
+        '''
         super(SupervisorQuery, self).__init__()
         self.class_features = nn.Sequential(
             nn.Linear(10, 128),
@@ -25,3 +28,4 @@ class SupervisorQuery(nn.Module):
     def forward(self, class_vec):
         class_feat = self.class_features(class_vec)
         return self.path_net(class_feat)
+

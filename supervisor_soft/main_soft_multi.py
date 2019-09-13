@@ -10,11 +10,13 @@ import torchvision.transforms as transforms
 import os
 import argparse
 import sys
-
+sys.path.append('..')
+sys.path.append('.')
 from essentials import make_dir
 
-sys.path.append('.')
+# sys.path.append('.')
 from models import ResNet18
+from models import VGG
 from utils import progress_bar
 
 import ipdb
@@ -22,6 +24,8 @@ import pickle
 import numpy as np
 from tqdm import tqdm
 import skimage.io as sio
+from collections import OrderedDict
+
 
 from tensorboard_logger import Logger
 import matplotlib.pyplot as plt
@@ -41,7 +45,8 @@ parser.add_argument('--lambda_ortho', default=1, type=float)
 parser.add_argument('--lambda_quant', default=1, type=float)
 parser.add_argument('--lambda_l1', default=1, type=float)
 parser.add_argument('--switch', nargs='+', type=int,
-                    default=[0, 0, 0, 0, 1, 1, 1, 1])
+                    default=[0,0,0, 0,0,0, 0,0,0,0, 1,1,1,0 ,1,1,1,0,0]) # vgg, one extra 0 for average pool
+                    # default=[0, 0, 0, 0, 1, 1, 1, 1])
 args = parser.parse_args()
 
 start_epoch = 0
@@ -62,17 +67,17 @@ transform_test = transforms.Compose([
     transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
 ])
 
-trainset = torchvision.datasets.CIFAR10(root='/home/gauravm/.torch/',
+trainset = torchvision.datasets.CIFAR10(root='~/.torch/',
                                         train=True, download=True,
                                         transform=transform_train)
-trainloader = torch.utils.data.DataLoader(trainset, batch_size=128,
-                                          shuffle=True, num_workers=0)
+trainloader = torch.utils.data.DataLoader(trainset, batch_size=256,
+                                          shuffle=True, num_workers=2)
 
-testset = torchvision.datasets.CIFAR10(root='/home/gauravm/.torch/',
+testset = torchvision.datasets.CIFAR10(root='~/.torch/',
                                        train=False, download=True,
                                        transform=transform_test)
-testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False,
-                                         num_workers=0)
+testloader = torch.utils.data.DataLoader(testset, batch_size=256, shuffle=False,
+                                         num_workers=2)
 
 classes = (
     'plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship',
@@ -85,15 +90,27 @@ with open(os.path.join('./checkpoint', args.exp_name, 'args.pkl'), "wb") as f:
 
 # Model
 print('==> Building model..')
-# net = VGG('VGG19')
-net = ResNet18()
+net = VGG('VGG16')
+# net = ResNet18()
 
-checkpoint = torch.load('res/resnet-18-py3.pth')
-net.load_state_dict(checkpoint, strict=False)
+# Load Checkpoint
+###### TODO: change this to VGG pretrained model  ########
+# checkpoint = torch.load('res/resnet-18-py3.pth')
+checkpoint = torch.load('vgg/vgg-py3-bn-lr-3.pth')
+state_dict = checkpoint["net"]
+new_state_dict = OrderedDict()
+for k, v in state_dict.items():
+    name = k[7:]
+    new_state_dict[name] = v
+net.load_state_dict(new_state_dict)
+# net.load_state_dict(checkpoint, strict=False)
 net.cuda()
 net.eval()
 
-path_dims = [64, 64, 128, 128, 256, 256, 512, 512]
+# path_dims = [64, 64, 128, 128, 256, 256, 512, 512] # resnet
+path_dims = [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M'] # vgg16
+
+
 switch_vec = args.switch
 print('Switch vector {}'.format(switch_vec))
 
@@ -124,18 +141,30 @@ optimizer = optim.Adam(sup_net.parameters(), lr=args.lr)
 
 
 def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec, is_train=True):
-    query_pred = torch.gather(pred, 1, random_query.view(-1, 1)).squeeze(1)
+    '''
+
+    :param pred: softmax outputs from main network
+    :param random_query: batchsize x 1 values from 0-9
+    :param binary_target: if query matches the label, this is 1
+    :param sup_net: list of sup networks
+    :param switch_vec: which layers require compression
+    :param is_train:
+    :return:
+    '''
+    query_pred = torch.gather(pred, 1, random_query.view(-1, 1)).squeeze(1) # softmax scores for the query class
 
     num_s = torch.tensor(np.sum(switch_vec).item(), dtype=torch.float32).to(
         device)
     # ipdb.set_trace()
 
-    _, class_pred = torch.max(pred, dim=1)
+    _, class_pred = torch.max(pred, dim=1) # predicted class index with max softmax score
     binary_pred = class_pred.eq(random_query).type(torch.cuda.LongTensor)
     fn = ((binary_pred == 0) + (binary_target == 1)).eq(2)
     fp = ((binary_pred == 1) + (binary_target == 0)).eq(2)
     tp = ((binary_pred == 1) + (binary_target == 1)).eq(2)
     tn = ((binary_pred == 0) + (binary_target == 0)).eq(2)
+
+    ## Todo: Check weighting of the following
 
     tn_total = tn.sum().type(torch.cuda.FloatTensor) / 81.
     tp_total = tp.sum().type(torch.cuda.FloatTensor)
@@ -175,7 +204,9 @@ def estimate_metrics(pred, random_query, binary_target, sup_net, switch_vec, is_
     # ipdb.set_trace()
     metrics['total_loss'] = metrics['total_loss'] + metrics['bce_loss']
 
-    one_hot = torch.zeros((10, 10)).fill_(1).to(device)
+    # Todo: Understand after this
+
+    one_hot = torch.ones((10, 10)).to(device)
     s_one_hot = torch.zeros(10, 10).type(
         torch.cuda.FloatTensor)
     s_queries = torch.from_numpy(np.array(list(range(10)))).to(device)
@@ -310,8 +341,7 @@ def train(epoch, global_step=0):
     for batch_idx, (inputs, targets) in tqdm(enumerate(trainloader), total=len(trainloader)):
         inputs = inputs.to(device)
         targets = targets.to(device)
-
-        one_hot = torch.zeros((inputs.size(0), 10)).fill_(1).to(device)
+        one_hot = torch.ones((inputs.size(0), 10)).to(device)
 
         random_query = torch.from_numpy(
             np.random.randint(0, 10, size=(targets.size(0)))).to(device)
@@ -322,10 +352,10 @@ def train(epoch, global_step=0):
                                                  index=random_query.view(-1, 1),
                                                  src=one_hot)
         random_one_hot = random_one_hot.to(device)
-        binary_target = targets.eq(random_query).type(torch.cuda.LongTensor)
+        binary_target = targets.eq(random_query).type(torch.cuda.LongTensor) # if random query matches target, gt for binary loss is 1
 
-        imp_vectors = sup_net(random_one_hot)
-        out = net.forward_check_multi(inputs, imp_vectors, switch_vec)
+        imp_vectors = sup_net(random_one_hot) # imp_vectors is a list of importance vectors
+        out = net.forward_check_multi(inputs, imp_vectors, switch_vec) # for resnet
         out_softmax = F.softmax(out, dim=1)
 
         metrics, s_hist, _ = estimate_metrics(out_softmax, random_query,
@@ -356,75 +386,75 @@ def val(epoch, global_step=0, hard=False):
     total_ = 0.
     correct_ = 0.
 
-    for batch_idx, (inputs, targets) in tqdm(enumerate(testloader), total=len(testloader)):
-        inputs = inputs.to(device)
-        targets = targets.to(device)
+    with torch.no_grad():
+        for batch_idx, (inputs, targets) in tqdm(enumerate(testloader), total=len(testloader)):
+            inputs = inputs.to(device)
+            targets = targets.to(device)
 
-        class_softmax = np.zeros((inputs.size(0), 10))
+            class_softmax = np.zeros((inputs.size(0), 10))
 
-        for c in range(10):
+            for c in range(10):
 
-            one_hot = torch.zeros((inputs.size(0), 10)).fill_(1).to(device)
+                one_hot = torch.ones((inputs.size(0), 10)).to(device)
 
-            random_query = torch.zeros(inputs.size(0)).type(
-                torch.LongTensor).fill_(c).to(device)
-            random_one_hot = torch.zeros(inputs.size(0), 10).type(
-                torch.cuda.FloatTensor)
+                random_query = torch.zeros(inputs.size(0)).type(
+                    torch.LongTensor).fill_(c).to(device)
+                random_one_hot = torch.zeros(inputs.size(0), 10).type(
+                    torch.cuda.FloatTensor)
 
-            random_one_hot = random_one_hot.scatter_(dim=1,
-                                                     index=random_query.view(-1, 1),
-                                                     src=one_hot)
-            random_one_hot = random_one_hot.to(device)
-            binary_target = targets.eq(random_query).type(torch.cuda.LongTensor)
+                random_one_hot = random_one_hot.scatter_(dim=1,
+                                                         index=random_query.view(-1, 1),
+                                                         src=one_hot)
+                random_one_hot = random_one_hot.to(device)
+                binary_target = targets.eq(random_query).type(torch.cuda.LongTensor)
 
-            imp_vectors = sup_net(random_one_hot)
-            if hard:
-                imp_vectors = [(imp_vec > 0.5).type(torch.cuda.FloatTensor) for
-                               imp_vec in imp_vectors]
-            out = net.forward_check_multi(inputs, imp_vectors, switch_vec)
-            out_softmax = F.softmax(out, dim=1)
-            class_softmax[:, c] = out_softmax.cpu().data.numpy()[:,c]
+                imp_vectors = sup_net(random_one_hot)
+                if hard:
+                    imp_vectors = [(imp_vec > 0.5).type(torch.cuda.FloatTensor) if imp_vec is not None else '' for
+                                   imp_vec in imp_vectors]
+                out = net.forward_check_multi(inputs, imp_vectors, switch_vec)
+                out_softmax = F.softmax(out, dim=1)
+                class_softmax[:, c] = out_softmax.cpu().data.numpy()[:,c]
 
-            metrics, s_hist, ortho_mtrx = estimate_metrics(out_softmax,
-                                                           random_query,
-                                                           binary_target,
-                                                           sup_net, switch_vec, False)
+                metrics, s_hist, ortho_mtrx = estimate_metrics(out_softmax,
+                                                               random_query,
+                                                               binary_target,
+                                                               sup_net, switch_vec, False)
 
-            for name in metrics.keys():
-                if name not in total_metrics:
-                    total_metrics[name] = metrics[name].detach()
-                else:
-                    total_metrics[name] += metrics[name].detach()
-        # ipdb.set_trace()
-        pred_class = np.argmax(class_softmax, axis=1)
-        total_ += targets.size(0)
-        correct_ += np.sum(pred_class == targets.cpu().data.numpy())
+                for name in metrics.keys():
+                    if name not in total_metrics:
+                        total_metrics[name] = metrics[name].detach()
+                    else:
+                        total_metrics[name] += metrics[name].detach()
+            # ipdb.set_trace()
+            pred_class = np.argmax(class_softmax, axis=1)
+            total_ += targets.size(0)
+            correct_ += np.sum(pred_class == targets.cpu().data.numpy())
 
 
-    acc_ = correct_/total_
-    total_metrics['multi_class_accuracy'] = acc_
+        acc_ = correct_/total_
+        total_metrics['multi_class_accuracy'] = acc_
 
-    total_metrics['accuracy'] = (total_metrics['tp'] + total_metrics['tn'] / 81.) / (total_metrics['tp'] +
-                        total_metrics['tn'] / 81. +
-                        total_metrics['fp'] / 9. +
-                        total_metrics['fn'] / 9.)
+        total_metrics['accuracy'] = (total_metrics['tp'] + total_metrics['tn'] / 81.) / (total_metrics['tp'] +
+                            total_metrics['tn'] / 81. +
+                            total_metrics['fp'] / 9. +
+                            total_metrics['fn'] / 9.)
 
-    for name in total_metrics.keys():
-        if name not in ['tp', 'tn', 'fn', 'fp', 'accuracy', 'multi_class_accuracy']:
-            total_metrics[name] /= (len(testloader) * 10)
+        for name in total_metrics.keys():
+            if name not in ['tp', 'tn', 'fn', 'fp', 'accuracy', 'multi_class_accuracy']:
+                total_metrics[name] /= (len(testloader) * 10)
 
-    metrics, s_hist, ortho_mtrx = estimate_metrics(out_softmax, random_query,
-                                                   binary_target, sup_net,
-                                                   switch_vec, True)
+        metrics, s_hist, ortho_mtrx = estimate_metrics(out_softmax, random_query,
+                                                       binary_target, sup_net,
+                                                       switch_vec, True)
 
-    tag = 'val_hard' if hard else 'val_soft'
+        tag = 'val_hard' if hard else 'val_soft'
 
-    log_vals(logger, total_metrics, global_step, tag)
-    if not hard:
-        log_hist(logger, s_hist, global_step, tag)
-        log_plots(logger, switch_vec, s_hist, global_step, tag)
-        log_ortho(logger, ortho_mtrx, global_step, tag)
-
+        log_vals(logger, total_metrics, global_step, tag)
+        if not hard:
+            log_hist(logger, s_hist, global_step, tag)
+            log_plots(logger, switch_vec, s_hist, global_step, tag)
+            log_ortho(logger, ortho_mtrx, global_step, tag)
 
 global_step = load_epoch * len(trainloader)
 val(load_epoch, global_step=global_step)
